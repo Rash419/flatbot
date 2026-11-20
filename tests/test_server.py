@@ -249,6 +249,9 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(cfg.codex_effort, "medium")
         self.assertEqual(cfg.ai_timeout, 90)
         self.assertEqual(cfg.mail_senders, ("swiggy", "zomato"))
+        self.assertIn("hdfcbank", cfg.bank_senders)  # BANK_SENDERS unset: the built-in list
+        self.assertEqual(load_config({"TELEGRAM_BOT_TOKEN": "1:a", "BANK_SENDERS": "ICICIBank, alerts@sbi.co.in"})
+                         .bank_senders, ("icicibank", "alerts@sbi.co.in"))
         self.assertEqual(cfg.mail_poll_seconds, 30)  # raised to the minimum
         self.assertEqual(cfg.telegram_api_base, "http://localhost:8081")
         self.assertEqual(cfg.currency, "EUR")

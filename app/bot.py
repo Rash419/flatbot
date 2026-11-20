@@ -11,6 +11,7 @@ import secrets
 import threading
 from collections.abc import Callable, Sequence
 from datetime import datetime, timedelta
+from email.utils import parseaddr
 from html import escape
 from zoneinfo import ZoneInfo
 
@@ -31,11 +32,13 @@ RESEND_AFTER = timedelta(minutes=1)    # leave fresh items to whoever is sending
 ORDER_WINDOW = timedelta(hours=12)     # an order email and its payment are this close in time
 MAX_PICK_LINES = 40
 MAIL_FAILURES_BEFORE_WARNING = 5
+MAX_BANK_MAIL_CHARS = 4000  # bank alerts are short; the rest is disclaimers and footers
 _HOSTNAME = re.compile(r"^(?=.*[a-z])[a-z0-9-]+(\.[a-z0-9-]+)+$", re.I)
 # Default prefilter when main.py injects none: an amount with a currency marker (or "debited by 450"),
 # and not a one-time-password message. The real one lives in app.extract.
 _MONEY = re.compile(r"(?<![a-z])(?:rs\.?|inr)\s*\d|₹\s*\d|\bdebited\s+(?:by|for|with)\s+\d", re.I)
-_OTP = re.compile(r"\b(?:otp|one[- ]time password|verification code)\b", re.I)
+_OTP = re.compile(r"\b(?:otp|one[- ]time (?:password|pin)|verification code|security code|passcode"
+                  r"|auth(?:entication)? code)\b", re.I)
 _AMOUNT_ONLY = re.compile(r"^(?:rs\.?|inr|₹)?\s*(\d[\d,]*)(?:\.(\d{1,2}))?$", re.I)
 
 
@@ -46,6 +49,23 @@ def _snippet(text: str, limit: int = 200) -> str:
 
 def looks_like_money(text: str) -> bool:
     return bool(_MONEY.search(text)) and not _OTP.search(text)
+
+
+def _sender_matches(sender: str, senders: Sequence[str]) -> bool:
+    address = parseaddr(sender)[1].lower()
+    return any(s in address for s in senders)
+
+
+def bank_mail_text(subject: str, body: str) -> str | None:
+    """The text of a bank alert email to read like an SMS, or None for an OTP email.
+
+    Bank emails end with warnings such as "never share your OTP", which would make the whole
+    message look like an OTP, so lines mentioning one are left out instead of sent anywhere.
+    """
+    if _OTP.search(subject):
+        return None
+    lines = [line for line in body.splitlines() if not _OTP.search(line)]
+    return "\n".join([subject, *lines])[:MAX_BANK_MAIL_CHARS]
 
 
 def _amount_only(text: str) -> int | None:
@@ -64,13 +84,13 @@ class Bot:
         ("invite", "Join code for your flatmate"),
         ("name", "Change your display name"),
         ("export", "CSV of all shared entries"),
-        ("email", "Connect order emails to split by item"),
+        ("email", "Read bank alert and order emails"),
         ("help", "How this works"),
     ]
 
     def __init__(self, db: DB, tg: Telegram, *, currency: str = "INR", public_url: str = "",
                  tz: str = "Asia/Kolkata", extractor=None, mailbox=None, mail_senders: Sequence[str] = (),
-                 money_candidate: Callable[[str], bool] | None = None):
+                 bank_senders: Sequence[str] = (), money_candidate: Callable[[str], bool] | None = None):
         self.db = db
         self.tg = tg
         self.currency = currency
@@ -79,6 +99,7 @@ class Bot:
         self.extractor = extractor          # AI reader for SMS, order emails and bills; None = AI off
         self.mailbox = mailbox              # IMAP helper (app.mail); None = order emails off
         self.mail_senders = tuple(mail_senders)
+        self.bank_senders = tuple(s.strip().lower() for s in bank_senders if s.strip())
         self.money_candidate = money_candidate or looks_like_money
         self._wake = threading.Event()
         self._code = db.set_default("join_code", secrets.token_hex(4))
@@ -132,9 +153,12 @@ class Bot:
         member = self.db.member_by_token(token) if token else None
         if member is None:
             return "unknown"
+        return self._enqueue(member["tg_id"], text)
+
+    def _enqueue(self, payer: int, text: str) -> str:
+        """Queue a bank message (SMS or alert email) for the AI reader."""
         if not self.money_candidate(text):
             return "ignored"  # not about money: keep nothing about it
-        payer = member["tg_id"]
         digest = hashlib.sha256(f"{payer}:{' '.join(text.split())}".encode()).hexdigest()
         if not self.db.enqueue_sms(payer, digest, text):
             return "duplicate"
@@ -244,7 +268,7 @@ class Bot:
                 fetched = self.mailbox.fetch_new(
                     acc["host"], acc["port"], acc["address"], acc["password"],
                     uidvalidity=acc["uidvalidity"], last_uid=acc["last_uid"],
-                    senders=self.mail_senders, limit=20)
+                    senders=self.mail_senders + self.bank_senders, limit=20)
             except Exception as e:
                 log.warning("mailbox of member %s could not be read (%s)", owner, type(e).__name__)
                 if self.db.mail_failed(owner) == MAIL_FAILURES_BEFORE_WARNING:
@@ -253,6 +277,12 @@ class Bot:
                 continue
             self.db.mail_fetched(owner, fetched.uidvalidity, fetched.last_uid)
             for mail in fetched.mails:
+                if _sender_matches(mail.sender, self.bank_senders):
+                    # A bank alert email is read exactly like a bank SMS from this mailbox's owner.
+                    text = bank_mail_text(mail.subject, mail.body)
+                    if text is not None:
+                        self._enqueue(owner, text)
+                    continue
                 try:
                     order = self.extractor.order_email(mail.sender, mail.subject, mail.body)
                 except Exception as e:
@@ -751,7 +781,7 @@ class Bot:
             "<i>&lt;Name&gt; owes all</i>\n\n"
             "/balance who owes whom\n/history last 15 shared entries\n/rules merchants you always split or skip\n"
             "/phone set up SMS forwarding\n/invite join code for your flatmate\n/name change your name\n"
-            "/export CSV of everything shared\n/email read order emails to split by item"
+            "/export CSV of everything shared\n/email read bank alert and order emails"
         )
 
     def _email_off_reason(self) -> str | None:
@@ -794,8 +824,10 @@ class Bot:
             self.tg.send(uid, f"Couldn't sign in to {escape(host)}: {escape(str(e))}{leftover}")
             return
         self.db.set_mail_account(uid, address, password, host, IMAP_PORT)
+        banks = ", ".join(escape(s) for s in self.bank_senders) or "none configured on the server"
         senders = ", ".join(escape(s) for s in self.mail_senders) or "none configured on the server yet"
-        self.tg.send(uid, f"Connected {escape(address)}.\nI'll read order emails from: {senders}.\n"
+        self.tg.send(uid, f"Connected {escape(address)}.\nI'll read bank alert emails from: {banks}.\n"
+                          f"I'll read order emails from: {senders}.\n"
                           "I read nothing else, and never change or delete anything in your mailbox."
                           + leftover)
 
@@ -807,7 +839,9 @@ class Bot:
         status = (f"Connected: {escape(acc['address'])} ({escape(acc['host'])}). "
                   "Send <code>/email off</code> to disconnect." if acc else "No mailbox connected.")
         return (
-            f"<b>Order emails</b>\n{status}\n\n"
+            f"<b>Bank alert and order emails</b>\n{status}\n\n"
+            "Bank alert emails (turn on email alerts in your bank's app) are read like bank SMS, so "
+            "you don't need SMS forwarding.\n\n"
             "When an order email (Swiggy, Zomato, Blinkit, Amazon…) matches a payment, you can tick "
             "which items were for the flat.\n\n"
             "<b>Gmail</b>\n1. Turn on 2-step verification.\n"

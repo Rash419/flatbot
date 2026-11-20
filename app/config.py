@@ -16,6 +16,13 @@ DEFAULT_MAIL_SENDERS = (
     "swiggy", "zomato", "blinkit", "zepto", "bigbasket", "amazon", "flipkart", "instamart",
     "dunzo", "dmart", "jiomart", "licious", "countrydelight", "eatsure", "dominos", "magicpin",
 )
+# Bank alert emails: matched against the From address like MAIL_SENDERS, read like bank SMS.
+# "bank.in" covers banks on the RBI-mandated .bank.in domains.
+DEFAULT_BANK_SENDERS = (
+    "hdfcbank", "icicibank", "sbi.co.in", "sbicard", "axisbank", "kotak", "idfcfirstbank", "yesbank",
+    "indusind", "federalbank", "aubank", "bankofbaroda", "pnb", "canarabank", "unionbank", "rblbank",
+    "bank.in",
+)
 EFFORTS = ("minimal", "low", "medium", "high", "xhigh")
 MIN_MAIL_POLL = 30
 
@@ -33,6 +40,7 @@ class Config:
     codex_effort: str = "low"
     ai_timeout: float = 120
     mail_senders: tuple[str, ...] = DEFAULT_MAIL_SENDERS
+    bank_senders: tuple[str, ...] = DEFAULT_BANK_SENDERS
     mail_poll_seconds: float = 120
 
 
@@ -85,11 +93,11 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
     ai_timeout = seconds("AI_TIMEOUT", 120)
     mail_poll = max(seconds("MAIL_POLL_SECONDS", 120), MIN_MAIL_POLL)
 
-    senders_raw = env.get("MAIL_SENDERS")
-    if senders_raw is None or not senders_raw.strip():
-        senders = DEFAULT_MAIL_SENDERS
-    else:
-        senders = tuple(dict.fromkeys(s.strip().lower() for s in senders_raw.split(",") if s.strip()))
+    def sender_list(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
+        raw = env.get(name)
+        if raw is None or not raw.strip():
+            return default
+        return tuple(dict.fromkeys(s.strip().lower() for s in raw.split(",") if s.strip()))
 
     if problems:
         raise ConfigError("Invalid configuration:\n  - " + "\n  - ".join(problems))
@@ -105,6 +113,7 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
         codex_model=get("CODEX_MODEL"),
         codex_effort=effort,
         ai_timeout=ai_timeout,
-        mail_senders=senders,
+        mail_senders=sender_list("MAIL_SENDERS", DEFAULT_MAIL_SENDERS),
+        bank_senders=sender_list("BANK_SENDERS", DEFAULT_BANK_SENDERS),
         mail_poll_seconds=mail_poll,
     )

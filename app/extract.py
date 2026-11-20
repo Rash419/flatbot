@@ -121,7 +121,7 @@ BILL_SCHEMA = _obj({
 })
 
 _SMS_PROMPT = """\
-Decide whether this bank SMS reports a completed spend, and extract it.
+Decide whether this bank SMS (or bank alert email) reports a completed spend, and extract it.
 
 A spend is money that has already left the user's own bank account or card: a purchase, a card \
 swipe, a UPI payment sent, a bank transfer sent, an ATM withdrawal.

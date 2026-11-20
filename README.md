@@ -71,6 +71,10 @@ curl -X POST "https://your.server/sms/<token>" \
 
 The reply is `{"status": "queued"}` when the SMS was accepted (the bot then reads it and, if it is a spend, messages you), `"ignored"` for messages with no amount and for OTPs, and `"duplicate"` when the same SMS was already received. A 404 with `"unknown"` means the token in the URL is wrong.
 
+## Bank alert emails instead of SMS
+
+If you would rather not install an SMS forwarder, turn on email alerts for every debit in your bank's app or net banking and connect your mailbox with `/email` (see below). Emails from senders in `BANK_SENDERS` (by default the major Indian banks, such as `hdfcbank`, `icicibank`, `sbi.co.in`, `axisbank` and anything on a `.bank.in` domain) are read exactly like a bank SMS: a completed spend gets the same buttons. The mailbox is checked every `MAIL_POLL_SECONDS`, so prompts arrive a minute or two after the payment. Lines warning you not to share an OTP are dropped before the email is read, and OTP emails are ignored. If the same payment also arrives by SMS with the same reference number, it is recorded once.
+
 ## Order emails
 
 So a mixed order (your shampoo and shared groceries in one Blinkit order) can be split by item, the bot can read order emails. Each person connects their own mailbox by sending the bot:
@@ -108,7 +112,7 @@ To bring over a balance you already had, record it as one expense paid by the pe
 
 ## Privacy
 
-- Every SMS that mentions an amount of money, every order email from a sender in `MAIL_SENDERS`, and every bill photo you send are sent to OpenAI through Codex to be read. Nothing else from your mailbox is downloaded.
+- Every SMS that mentions an amount of money, every bank alert email from a sender in `BANK_SENDERS` that mentions one, every order email from a sender in `MAIL_SENDERS`, and every bill photo you send are sent to OpenAI through Codex to be read. Nothing else from your mailbox is downloaded.
 - OTPs, verification codes and messages without an amount never leave the server and are not stored.
 - SMS text waits in a queue in the database until it has been read, and is then cleared from the queue. The text of an SMS that turned out to be a spend is kept with that entry in the database; everything else is discarded.
 - The mailbox app password is stored in `data/bot.db` in plain text, so protect that file (and its backups). Use an app password, never your main password, so it can be revoked on its own.

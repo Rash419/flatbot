@@ -1134,6 +1134,40 @@ class MailTest(MailBase):
         self.bot.poll_mail()
         self.assertEqual(self.db.mail_account(MIHIR)["failures"], 0)
 
+    def bank_mail(self, body, uid=1, subject="You have done a UPI txn"):
+        return SimpleNamespace(uid=uid, sender="HDFC Bank InstaAlerts <alerts@hdfcbank.net>",
+                               subject=subject, body=body)
+
+    def test_bank_alert_email_is_read_like_an_sms(self):
+        self.make_bot(extractor=self.extractor, mailbox=self.mailbox,
+                      mail_senders=("orders@blinkit.example",), bank_senders=("hdfcbank",))
+        # Nearly every bank email warns about OTPs; that must not hide the spend, nor reach the AI.
+        self.mailbox.batches = [[self.bank_mail(sms("451.00") + "\nNever share your OTP, PIN or CVV.")]]
+        self.bot.poll_mail()
+        self.bot.process_inbox()
+        self.assertEqual(self.mailbox.fetch_calls[0]["senders"], ("orders@blinkit.example", "hdfcbank"))
+        self.assertNotIn("OTP", self.extractor.sms.call_args.args[0])
+        self.extractor.order_email.assert_not_called()
+        _, text, keys = self.prompt(MIHIR)
+        self.assertIn("451", text)
+        self.assertIn("Split equally", keys)
+        # An order email for the same amount attaches to it, as it would to an SMS spend.
+        self.deliver("Your Blinkit order", order(45100, LINES))
+        self.assertIn("Pick shared items", self.prompt(MIHIR)[2])
+        # The same payment also forwarded as an SMS is not recorded twice.
+        self.ingest(sms("451.00"))
+        self.assertEqual(len(self.db._all("SELECT * FROM items")), 1)
+
+    def test_bank_email_without_money_is_dropped(self):
+        self.make_bot(extractor=self.extractor, mailbox=self.mailbox, bank_senders=("hdfcbank",))
+        self.mailbox.batches = [[self.bank_mail("Your OTP is 123456. Do not share it."),
+                                 self.bank_mail("Rs.451.00 at BLINKIT, code 123456", uid=2,
+                                                subject="One Time Password for your transaction")]]
+        self.bot.poll_mail()
+        self.bot.process_inbox()
+        self.extractor.sms.assert_not_called()
+        self.assertEqual(self.tg.to(MIHIR), [])
+
     def test_poll_mail_off_without_mailbox(self):
         self.make_bot(extractor=self.extractor)
         self.bot.poll_mail()

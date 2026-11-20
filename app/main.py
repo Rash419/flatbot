@@ -146,6 +146,7 @@ def main() -> int:
     extractor, mailbox = setup_ai(cfg)
     bot = Bot(db, tg, currency=cfg.currency, public_url=cfg.public_url, tz=cfg.timezone,
               extractor=extractor, mailbox=mailbox, mail_senders=cfg.mail_senders,
+              bank_senders=cfg.bank_senders,
               money_candidate=money_candidate)
 
     try:
