@@ -1,0 +1,2 @@
+# Time zone data for zoneinfo on slim images. Everything else is the standard library.
+tzdata
